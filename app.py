@@ -42,7 +42,7 @@ def get_client():
         )
         st.stop()
 
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(api_key=api_key, http_options={"api_version": "v1"})
 
     # Probe the API immediately so auth failures show a clear message
     try:
