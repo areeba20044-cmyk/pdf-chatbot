@@ -1,0 +1,20 @@
+# Secrets & environment
+.env
+.streamlit/secrets.toml
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Large generated files — rebuilt at runtime
+faiss_cache/
+faiss_index/
+data/
+
+# OS
+.DS_Store
+Thumbs.db
