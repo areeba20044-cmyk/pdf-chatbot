@@ -103,16 +103,38 @@ def extract_chunks(files_data: list[tuple[str, bytes]]):
 
 # ── Embedding / FAISS ─────────────────────────────────────────────────────────
 
-def embed_texts(client, texts: list[str]) -> np.ndarray:
+def _embed_one(client, text: str) -> list[float]:
+    """Embed a single text with retry/backoff for rate limits and transient errors."""
+    for attempt in range(6):
+        try:
+            result = client.models.embed_content(model=EMBEDDING_MODEL, contents=text)
+            return result.embeddings[0].values
+        except Exception as exc:
+            err = str(exc)
+            is_rate  = "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower()
+            is_server = "503" in err or "UNAVAILABLE" in err or "500" in err
+            if attempt == 5:
+                raise
+            if is_rate:
+                wait = 15 * (attempt + 1)   # 15 s, 30 s, 45 s …
+                time.sleep(wait)
+            elif is_server:
+                time.sleep(10)
+            else:
+                raise   # auth / bad-request errors — no point retrying
+
+
+def embed_texts(client, texts: list[str], progress=None) -> np.ndarray:
     vectors = []
-    for text in texts:
-        result = client.models.embed_content(model=EMBEDDING_MODEL, contents=text)
-        vectors.append(result.embeddings[0].values)
+    for i, text in enumerate(texts):
+        vectors.append(_embed_one(client, text))
+        if progress is not None:
+            progress.progress((i + 1) / len(texts), text=f"Embedding {i+1}/{len(texts)} chunks…")
     return np.array(vectors, dtype=np.float32)
 
 
-def build_index(client, chunks: list[str]):
-    embeddings = embed_texts(client, chunks)
+def build_index(client, chunks: list[str], progress=None):
+    embeddings = embed_texts(client, chunks, progress=progress)
     index = faiss.IndexFlatL2(embeddings.shape[1])
     index.add(embeddings)
     return index
@@ -148,8 +170,17 @@ def ask_gemini(client, retrieved: list[dict], question: str, history: list[dict]
         f"Document Context:\n{context}\n\n"
         f"Question: {question}\n\nAnswer:"
     )
-    response = client.models.generate_content(model=LLM_MODEL, contents=prompt)
-    return response.text
+    for attempt in range(4):
+        try:
+            response = client.models.generate_content(model=LLM_MODEL, contents=prompt)
+            return response.text
+        except Exception as exc:
+            err = str(exc)
+            is_rate   = "429" in err or "RESOURCE_EXHAUSTED" in err
+            is_server = "503" in err or "UNAVAILABLE" in err
+            if attempt == 3 or (not is_rate and not is_server):
+                raise
+            time.sleep(15 * (attempt + 1))
 
 # ── PDF Viewer helper ─────────────────────────────────────────────────────────
 
@@ -240,7 +271,11 @@ with st.sidebar:
                     st.session_state.extraction_errors = errors
 
                     if chunks:
-                        idx = build_index(client, chunks)
+                        progress_bar = st.progress(0, text="Embedding chunks…")
+                        try:
+                            idx = build_index(client, chunks, progress=progress_bar)
+                        finally:
+                            progress_bar.empty()
                         _save_cache(current_hash, idx, chunks, meta)
                         st.session_state.index = idx
                         st.session_state.chunks = chunks
