@@ -48,19 +48,24 @@ def get_client():
     try:
         client.models.embed_content(model=EMBEDDING_MODEL, contents="ping")
     except Exception as exc:
-        status = getattr(exc, "status_code", None)
-        if status in (401, 403) or "API_KEY_INVALID" in str(exc) or "PERMISSION_DENIED" in str(exc):
+        err_str = str(exc)
+        is_auth = any(k in err_str for k in ("API_KEY_INVALID", "PERMISSION_DENIED", "401", "403"))
+        is_rate = any(k in err_str for k in ("429", "RESOURCE_EXHAUSTED", "quota"))
+        if is_auth:
             st.error(
-                f"**API key rejected (HTTP {status}).**  \n"
-                "The key in Streamlit Secrets does not match an active Gemini API key.  \n"
+                "**API key rejected.**  \n"
+                "The key in Streamlit Secrets is invalid or has no access to the Gemini API.  \n"
                 "1. Go to [Google AI Studio](https://aistudio.google.com/apikey) and copy your key.  \n"
                 "2. In Streamlit Cloud open **⋮ → Settings → Secrets** and update `GEMINI_API_KEY`.  \n"
-                "3. Click **Save** — the app restarts automatically."
+                "3. Click **Save** — the app restarts automatically.  \n\n"
+                f"*Details: {err_str[:300]}*"
             )
             st.stop()
-        # 429 on startup probe is fine — key is valid, just rate-limited
-        if status not in (429,):
-            st.error(f"**API connection error (HTTP {status}):** {type(exc).__name__}. Check the logs.")
+        if not is_rate:
+            st.error(
+                f"**API connection error:** {type(exc).__name__}  \n"
+                f"*{err_str[:400]}*"
+            )
             st.stop()
 
     return client
