@@ -35,11 +35,35 @@ def get_client():
             pass
     if not api_key:
         st.error(
-            "GEMINI_API_KEY not found. "
-            "Add it to your .env file locally, or to Streamlit Secrets when deployed."
+            "**GEMINI_API_KEY not set.**  \n"
+            "Local: add it to your `.env` file.  \n"
+            "Streamlit Cloud: go to **App Settings → Secrets** and add:  \n"
+            "```\nGEMINI_API_KEY = \"your-key-here\"\n```"
         )
         st.stop()
-    return genai.Client(api_key=api_key)
+
+    client = genai.Client(api_key=api_key)
+
+    # Probe the API immediately so auth failures show a clear message
+    try:
+        client.models.embed_content(model=EMBEDDING_MODEL, contents="ping")
+    except Exception as exc:
+        status = getattr(exc, "status_code", None)
+        if status in (401, 403) or "API_KEY_INVALID" in str(exc) or "PERMISSION_DENIED" in str(exc):
+            st.error(
+                f"**API key rejected (HTTP {status}).**  \n"
+                "The key in Streamlit Secrets does not match an active Gemini API key.  \n"
+                "1. Go to [Google AI Studio](https://aistudio.google.com/apikey) and copy your key.  \n"
+                "2. In Streamlit Cloud open **⋮ → Settings → Secrets** and update `GEMINI_API_KEY`.  \n"
+                "3. Click **Save** — the app restarts automatically."
+            )
+            st.stop()
+        # 429 on startup probe is fine — key is valid, just rate-limited
+        if status not in (429,):
+            st.error(f"**API connection error (HTTP {status}):** {type(exc).__name__}. Check the logs.")
+            st.stop()
+
+    return client
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────
 
@@ -274,8 +298,17 @@ with st.sidebar:
                         progress_bar = st.progress(0, text="Embedding chunks…")
                         try:
                             idx = build_index(client, chunks, progress=progress_bar)
-                        finally:
                             progress_bar.empty()
+                        except Exception as exc:
+                            progress_bar.empty()
+                            status = getattr(exc, "status_code", None)
+                            st.error(
+                                f"**Embedding failed (HTTP {status}, {type(exc).__name__}).**  \n"
+                                "Most likely your API key in Streamlit Secrets is wrong or expired.  \n"
+                                "Go to **⋮ → Settings → Secrets**, verify `GEMINI_API_KEY`, then **Save**."
+                            )
+                            st.session_state.processed_hash = None
+                            st.stop()
                         _save_cache(current_hash, idx, chunks, meta)
                         st.session_state.index = idx
                         st.session_state.chunks = chunks
